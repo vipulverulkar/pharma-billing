@@ -31,8 +31,33 @@ export const api = {
     req(`/api/medicines/${id}`, { method: 'PUT', body: JSON.stringify(m) }),
   deleteMedicine: (id) => req(`/api/medicines/${id}`, { method: 'DELETE' }),
   createBill: (bill) => req('/api/bills', { method: 'POST', body: JSON.stringify(bill) }),
-  listBills: () => req('/api/bills'),
+  listBills: (opts = {}) => {
+    const p = new URLSearchParams();
+    if (opts.page != null) p.set('page', opts.page);
+    if (opts.per_page != null) p.set('per_page', opts.per_page);
+    if (opts.search) p.set('search', opts.search);
+    if (opts.status && opts.status !== 'all') p.set('status', opts.status);
+    if (opts.from) p.set('from', opts.from);
+    if (opts.to) p.set('to', opts.to);
+    const qs = p.toString();
+    return req(`/api/bills${qs ? `?${qs}` : ''}`);
+  },
   billDetail: (id) => req(`/api/bills/${id}`),
+  returnBill: (id) => req(`/api/bills/${id}/return`, { method: 'POST' }),
+  getDashboard: () => req('/api/dashboard'),
+  getSalesReport: (days = 14) => req(`/api/reports/sales?days=${days}`),
+  listCustomers: (search = '') =>
+    req(`/api/customers${search ? `?search=${encodeURIComponent(search)}` : ''}`),
+  customerBills: (id) => req(`/api/customers/${id}/bills`),
+  listSuppliers: () => req('/api/suppliers'),
+  createSupplier: (s) => req('/api/suppliers', { method: 'POST', body: JSON.stringify(s) }),
+  updateSupplier: (id, s) => req(`/api/suppliers/${id}`, { method: 'PUT', body: JSON.stringify(s) }),
+  deleteSupplier: (id) => req(`/api/suppliers/${id}`, { method: 'DELETE' }),
+  createPurchase: (p) => req('/api/purchases', { method: 'POST', body: JSON.stringify(p) }),
+  adjustStock: (id, delta, reason) =>
+    req(`/api/medicines/${id}/adjust`, { method: 'POST', body: JSON.stringify({ delta, reason }) }),
+  listMovements: (medicine_id = '') =>
+    req(`/api/stock-movements${medicine_id ? `?medicine_id=${medicine_id}` : ''}`),
   listUsers: () => req('/api/users'),
   createUser: (u) => req('/api/users', { method: 'POST', body: JSON.stringify(u) }),
   deleteUser: (id) => req(`/api/users/${id}`, { method: 'DELETE' }),

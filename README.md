@@ -128,7 +128,8 @@ Sessions are token-based (12 h, configurable via `SESSION_HOURS`) and all
 - `PUT /api/medicines/:id` — edit
 - `DELETE /api/medicines/:id` — remove
 - `POST /api/bills` — create bill `{customer_name, customer_phone, items:[{medicine_id, qty}]}` (stock decremented, GST applied, totals in ₹)
-- `GET /api/bills`, `GET /api/bills/:id` — history
+- `GET /api/bills`, `GET /api/bills/:id` — history (latest 200 by default;
+- paged full history with `?page=1&per_page=10&search=&status=&from=&to=` → `{bills, total, page, per_page, total_pages}`)
 
 ## Billing model: number of tablets
 - `quantity` = number of tablets (or units, e.g. sachets) in stock

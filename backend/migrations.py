@@ -13,7 +13,19 @@ from datetime import datetime
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
-from models import Base, GstRate, Medicine, PaymentMode, StoreSetting, UnitType, User
+from models import (
+    Base,
+    Bill,
+    Customer,
+    GstRate,
+    Medicine,
+    PaymentMode,
+    StockMovement,
+    StoreSetting,
+    Supplier,
+    UnitType,
+    User,
+)
 
 SCHEMA_VERSIONS_TABLE = "schema_migrations"
 
@@ -86,7 +98,6 @@ def mig_004_seed_master_data(engine):
                     gstin="",
                     logo_path="",
                     low_stock_limit=10,
-                    created_at=_now(),
                 )
             )
         s.commit()
@@ -1429,6 +1440,68 @@ def mig_011_bill_item_details(engine):
     _ensure_column(engine, "bill_items", "medicine_usage", "TEXT NOT NULL DEFAULT ''")
 
 
+def mig_012_pharmacy_tables(engine):
+    """Suppliers, customers ledger + stock movement audit trail."""
+    Base.metadata.create_all(engine)
+    # Backfill customers from historic bills (group by phone or name).
+    with Session(engine) as s:
+        if s.query(Customer).count() == 0:
+            rows = s.execute(
+                text(
+                    "SELECT customer_name, customer_phone, COUNT(*), "
+                    "COALESCE(SUM(grand_total),0), MAX(created_at) "
+                    "FROM bills GROUP BY customer_name, customer_phone"
+                )
+            ).fetchall()
+            for name, phone, cnt, spent, last in rows:
+                if not (name or phone):
+                    continue
+                s.add(
+                    Customer(
+                        name=name or "",
+                        phone=phone or "",
+                        total_bills=int(cnt or 0),
+                        total_spent=float(spent or 0),
+                        last_visit=last or "",
+                    )
+                )
+            s.commit()
+
+
+def mig_013_medicine_pharmacy_fields(engine):
+    """MRP, supplier, rack, schedule, Rx flag, per-item min stock."""
+    _ensure_column(engine, "medicines", "mrp", "REAL NOT NULL DEFAULT 0.0")
+    _ensure_column(engine, "medicines", "supplier", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(engine, "medicines", "rack", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(engine, "medicines", "schedule", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(
+        engine, "medicines", "rx_required", "BOOLEAN NOT NULL DEFAULT 0"
+    )
+    _ensure_column(engine, "medicines", "min_stock", "INTEGER NOT NULL DEFAULT 0")
+    # Sensible defaults: scheduled drugs commonly need prescription.
+    with Session(engine) as s:
+        try:
+            s.execute(
+                text(
+                    "UPDATE medicines SET mrp = price WHERE mrp = 0 OR mrp IS NULL"
+                )
+            )
+            s.commit()
+        except Exception:
+            s.rollback()
+
+
+def mig_014_bill_pharmacy_fields(engine):
+    """Bill status (completed/returned), doctor + prescription for compliance."""
+    _ensure_column(
+        engine, "bills", "status", "TEXT NOT NULL DEFAULT 'completed'"
+    )
+    _ensure_column(engine, "bills", "doctor_name", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(
+        engine, "bills", "prescription_no", "TEXT NOT NULL DEFAULT ''"
+    )
+
+
 def migrate(engine, admin_user="admin", admin_pass="admin"):
     """Apply all pending migrations in order. Returns list of applied versions."""
     Base.metadata.create_all(engine)
@@ -1465,6 +1538,13 @@ def migrate(engine, admin_user="admin", admin_pass="admin"):
             "bill item description and usage",
             lambda: mig_011_bill_item_details(engine),
         ),
+        (12, "suppliers/customers/stock ledger", lambda: mig_012_pharmacy_tables(engine)),
+        (
+            13,
+            "medicine pharmacy fields",
+            lambda: mig_013_medicine_pharmacy_fields(engine),
+        ),
+        (14, "bill status/doctor fields", lambda: mig_014_bill_pharmacy_fields(engine)),
     ]
     done = []
     for version, _name, fn in migrations:

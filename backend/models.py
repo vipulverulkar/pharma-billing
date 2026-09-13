@@ -26,6 +26,13 @@ class Medicine(Base):
     gst_percent: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     description: Mapped[str] = mapped_column(String, nullable=False, default="")
     usage: Mapped[str] = mapped_column(String, nullable=False, default="")
+    # --- pharmacy extensions ---
+    mrp: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    supplier: Mapped[str] = mapped_column(String, nullable=False, default="")
+    rack: Mapped[str] = mapped_column(String, nullable=False, default="")
+    schedule: Mapped[str] = mapped_column(String, nullable=False, default="")
+    rx_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    min_stock: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 class Bill(Base):
@@ -41,6 +48,9 @@ class Bill(Base):
     grand_total: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     payment_mode: Mapped[str] = mapped_column(String, nullable=False, default="Cash")
     created_at: Mapped[str] = mapped_column(String, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String, nullable=False, default="completed")
+    doctor_name: Mapped[str] = mapped_column(String, nullable=False, default="")
+    prescription_no: Mapped[str] = mapped_column(String, nullable=False, default="")
 
     items: Mapped[list["BillItem"]] = relationship(
         "BillItem", back_populates="bill", cascade="all, delete-orphan"
@@ -120,3 +130,44 @@ class PaymentMode(Base):
     name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[str] = mapped_column(String, nullable=False, default="")
+
+
+class Supplier(Base):
+    """Medicine distributors / wholesalers for purchase entries."""
+
+    __tablename__ = "suppliers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False, default="")
+    phone: Mapped[str] = mapped_column(String, nullable=False, default="")
+    address: Mapped[str] = mapped_column(String, nullable=False, default="")
+    gstin: Mapped[str] = mapped_column(String, nullable=False, default="")
+    created_at: Mapped[str] = mapped_column(String, nullable=False, default="")
+
+
+class Customer(Base):
+    """Repeat-customer ledger, auto-maintained from bills."""
+
+    __tablename__ = "customers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False, default="")
+    phone: Mapped[str] = mapped_column(String, nullable=False, default="")
+    total_bills: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_spent: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    last_visit: Mapped[str] = mapped_column(String, nullable=False, default="")
+
+
+class StockMovement(Base):
+    """Auditable stock ledger: sales, purchases, adjustments, returns."""
+
+    __tablename__ = "stock_movements"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    medicine_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    medicine_name: Mapped[str] = mapped_column(String, nullable=False, default="")
+    change: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reason: Mapped[str] = mapped_column(String, nullable=False, default="")
+    ref: Mapped[str] = mapped_column(String, nullable=False, default="")
+    created_at: Mapped[str] = mapped_column(String, nullable=False, default="")
+    created_by: Mapped[str] = mapped_column(String, nullable=False, default="")
