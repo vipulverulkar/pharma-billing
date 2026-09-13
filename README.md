@@ -15,6 +15,20 @@
 - `backend/app.py` — Flask REST API + SQLite (`pharmacy.db` auto-created with sample stock)
 - `frontend/` — React + Vite UI (billing in Indian Rupees, inventory add/edit/remove, bills history)
 
+## Run on Windows (no Docker)
+
+1. Install **Python 3.10+** from https://www.python.org/downloads/
+   (tick **"Add python.exe to PATH"** during install).
+2. Install **Node.js LTS** from https://nodejs.org/ (needed once, to build the page).
+3. Download this folder (Code → Download ZIP, or `git clone`), unzip it.
+4. Double-click **`start.bat`** — it installs everything, builds the page on
+   first run, opens http://127.0.0.1:5000/ in your browser (login: `admin` / `admin`).
+   - If port 5000 is busy: run `start.bat 5001` from a terminal instead.
+   - To stop: close the black **"Pharmacy Server"** window.
+   - Your data lives in `backend\pharmacy.db` — copy that file to back it up.
+   - To change the admin password, log in and use the Users/Account tab
+     (Change password) — do this right after first login.
+
 ## Run backend
 ```bash
 cd backend
