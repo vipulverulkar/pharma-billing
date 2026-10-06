@@ -21,7 +21,7 @@ from functools import wraps
 
 from flask import Flask, g, jsonify, request, send_from_directory
 from flask_cors import CORS
-from sqlalchemy import create_engine, func, or_
+from sqlalchemy import and_, create_engine, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -803,19 +803,112 @@ def delete_payment_mode(mode_id):
 @app.get("/api/medicines")
 @require_auth
 def list_medicines():
+    """Medicine catalog, ordered by name.
+
+    Legacy (no ?page=): plain array of all matches (kept for backward compat).
+    Paginated (?page=1&per_page=20&search=&unit=&stock=&sort=): server-side
+    search + filters so large catalogs stay fast::
+
+        {"medicines": [...], "total": N, "page": 1, "per_page": 20, "total_pages": M}
+
+    unit: exact unit-type name (or 'all'). stock: all|low|out|expiring|expired|rx.
+    sort: name|stock|expiry|value.
+    """
+    from datetime import date, timedelta
+
     search = (request.args.get("search") or "").strip().lower()
     s = db()
-    q = s.query(Medicine)
-    if search:
-        like = f"%{search}%"
-        q = q.filter(
-            (func.lower(Medicine.name).like(like))
-            | (func.lower(Medicine.composition).like(like))
-            | (func.lower(Medicine.batch_no).like(like))
-            | (func.lower(Medicine.description).like(like))
-            | (func.lower(Medicine.usage).like(like))
-        )
-    return jsonify([med_to_dict(m) for m in q.order_by(Medicine.name).all()])
+
+    def _apply_filters(q):
+        if search:
+            like = f"%{search}%"
+            q = q.filter(
+                (func.lower(Medicine.name).like(like))
+                | (func.lower(Medicine.composition).like(like))
+                | (func.lower(Medicine.batch_no).like(like))
+                | (func.lower(Medicine.description).like(like))
+                | (func.lower(Medicine.usage).like(like))
+            )
+        unit = (request.args.get("unit") or "all").strip().lower()
+        if unit and unit != "all":
+            q = q.filter(func.lower(Medicine.unit) == unit)
+        stock = (request.args.get("stock") or "all").strip().lower()
+        if stock in ("low", "out", "expiring", "expired", "rx"):
+            today = date.today().isoformat()
+            if stock == "out":
+                q = q.filter(Medicine.quantity <= 0)
+            elif stock == "rx":
+                q = q.filter(Medicine.rx_required == True)  # noqa: E712
+            elif stock == "expired":
+                q = q.filter(
+                    Medicine.expiry_date.isnot(None),
+                    Medicine.expiry_date != "",
+                    Medicine.expiry_date < today,
+                )
+            elif stock == "expiring":
+                cutoff = (date.today() + timedelta(days=90)).isoformat()
+                q = q.filter(
+                    Medicine.expiry_date.isnot(None),
+                    Medicine.expiry_date != "",
+                    Medicine.expiry_date >= today,
+                    Medicine.expiry_date <= cutoff,
+                )
+            elif stock == "low":
+                try:
+                    low_limit = int(
+                        getattr(_get_settings(s), "low_stock_limit", 10) or 10
+                    )
+                except (TypeError, ValueError):
+                    low_limit = 10
+                q = q.filter(
+                    Medicine.quantity > 0,
+                    or_(
+                        Medicine.quantity <= low_limit,
+                        Medicine.quantity <= Medicine.min_stock,
+                    ),
+                )
+        return q
+
+    def _apply_sort(q, sort):
+        if sort == "stock":
+            return q.order_by(Medicine.quantity.asc(), Medicine.name.asc())
+        if sort == "expiry":
+            empty_exp = or_(
+                Medicine.expiry_date.is_(None), Medicine.expiry_date == ""
+            )
+            return q.order_by(empty_exp, Medicine.expiry_date.asc())
+        if sort == "value":
+            return q.order_by(
+                (Medicine.price * Medicine.quantity).desc(), Medicine.name.asc()
+            )
+        return q.order_by(Medicine.name.asc())
+
+    q = _apply_filters(s.query(Medicine))
+    if request.args.get("page") is None:
+        return jsonify([med_to_dict(m) for m in q.order_by(Medicine.name).all()])
+
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        per_page = int(request.args.get("per_page", 20))
+    except (TypeError, ValueError):
+        per_page = 20
+    per_page = max(1, min(100, per_page))
+    sort = (request.args.get("sort") or "name").strip().lower()
+    q = _apply_sort(q, sort)
+    total = q.count()
+    total_pages = max(1, math.ceil(total / per_page))
+    page = min(page, total_pages)
+    rows = q.offset((page - 1) * per_page).limit(per_page).all()
+    return jsonify({
+        "medicines": [med_to_dict(m) for m in rows],
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "total_pages": total_pages,
+    })
 
 
 @app.post("/api/medicines")
@@ -1257,25 +1350,61 @@ def dashboard():
     today_bills = sum(1 for b in active if _day_key(b.created_at) == today)
     week_sales = _sum(lambda b: _day_key(b.created_at) >= week_ago)
     month_sales = _sum(lambda b: (b.created_at or "")[:7] == month_prefix)
-    meds = s.query(Medicine).all()
+    meds_total = s.query(func.count(Medicine.id)).scalar() or 0
     st = _get_settings(s)
     try:
         low_limit = int(getattr(st, "low_stock_limit", 10) or 10)
     except (TypeError, ValueError):
         low_limit = 10
-    low_stock = [med_to_dict(m) for m in meds if int(m.quantity or 0) <= max(low_limit, int(getattr(m, "min_stock", 0) or 0))]
-    out_of_stock = sum(1 for m in meds if int(m.quantity or 0) <= 0)
-    stock_value = round(sum(float(m.price or 0) * int(m.quantity or 0) for m in meds), 2)
+    low_cond = or_(
+        Medicine.quantity <= low_limit, Medicine.quantity <= Medicine.min_stock
+    )
+    low_stock_count = s.query(func.count(Medicine.id)).filter(low_cond).scalar() or 0
+    out_of_stock = (
+        s.query(func.count(Medicine.id)).filter(Medicine.quantity <= 0).scalar() or 0
+    )
+    stock_value = round(
+        s.query(
+            func.coalesce(func.sum(Medicine.price * Medicine.quantity), 0)
+        ).scalar() or 0,
+        2,
+    )
     # expiry analysis (YYYY-MM-DD strings sort lexicographically)
     soon_cutoff = (date.today() + timedelta(days=90)).isoformat()
-    expired = sorted(
-        [med_to_dict(m) for m in meds if m.expiry_date and m.expiry_date < today],
-        key=lambda m: m["expiry_date"],
-    )[:20]
-    expiry_soon = sorted(
-        [med_to_dict(m) for m in meds if m.expiry_date and today <= m.expiry_date <= soon_cutoff],
-        key=lambda m: m["expiry_date"],
-    )[:20]
+    has_expiry = and_(
+        Medicine.expiry_date.isnot(None), Medicine.expiry_date != ""
+    )
+    expired_count = (
+        s.query(func.count(Medicine.id))
+        .filter(has_expiry, Medicine.expiry_date < today)
+        .scalar()
+        or 0
+    )
+    expired = (
+        s.query(Medicine)
+        .filter(has_expiry, Medicine.expiry_date < today)
+        .order_by(Medicine.expiry_date.asc())
+        .limit(20)
+        .all()
+    )
+    expiry_soon = (
+        s.query(Medicine)
+        .filter(
+            has_expiry,
+            Medicine.expiry_date >= today,
+            Medicine.expiry_date <= soon_cutoff,
+        )
+        .order_by(Medicine.expiry_date.asc())
+        .limit(20)
+        .all()
+    )
+    low_stock = (
+        s.query(Medicine)
+        .filter(low_cond)
+        .order_by(Medicine.quantity.asc())
+        .limit(12)
+        .all()
+    )
     by_mode = {}
     for b in active:
         by_mode[b.payment_mode or "Cash"] = round(by_mode.get(b.payment_mode or "Cash", 0) + float(b.grand_total or 0), 2)
@@ -1306,10 +1435,12 @@ def dashboard():
     return jsonify({
         "today_sales": today_sales, "today_bills": today_bills,
         "week_sales": week_sales, "month_sales": month_sales,
-        "total_medicines": len(meds), "low_stock_count": len(low_stock),
+        "total_medicines": meds_total, "low_stock_count": low_stock_count,
         "out_of_stock": out_of_stock, "stock_value": stock_value,
-        "expired_count": len([m for m in meds if m.expiry_date and m.expiry_date < today]),
-        "low_stock": low_stock[:12], "expired": expired, "expiry_soon": expiry_soon,
+        "expired_count": expired_count,
+        "low_stock": [med_to_dict(m) for m in low_stock],
+        "expired": [med_to_dict(m) for m in expired],
+        "expiry_soon": [med_to_dict(m) for m in expiry_soon],
         "by_mode": by_mode, "top_sellers": top, "recent_bills": recent,
     })
 

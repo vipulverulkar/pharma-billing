@@ -24,8 +24,20 @@ export const api = {
     req('/api/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
   logout: () => req('/api/logout', { method: 'POST' }).catch(() => ({})),
   me: () => req('/api/me'),
-  listMedicines: (search = '') =>
-    req(`/api/medicines${search ? `?search=${encodeURIComponent(search)}` : ''}`),
+  listMedicines: (args = '') => {
+    // string (legacy): search text. object: {search, unit, stock, sort, page, per_page}
+    // pass page to get server-paginated {medicines, total, page, per_page, total_pages}
+    const o = typeof args === 'string' ? { search: args } : (args || {});
+    const p = new URLSearchParams();
+    if (o.search) p.set('search', o.search);
+    if (o.unit && o.unit !== 'all') p.set('unit', o.unit);
+    if (o.stock && o.stock !== 'all') p.set('stock', o.stock);
+    if (o.sort && o.sort !== 'name') p.set('sort', o.sort);
+    if (o.page != null) p.set('page', o.page);
+    if (o.per_page != null) p.set('per_page', o.per_page);
+    const qs = p.toString();
+    return req(`/api/medicines${qs ? `?${qs}` : ''}`);
+  },
   addMedicine: (m) => req('/api/medicines', { method: 'POST', body: JSON.stringify(m) }),
   updateMedicine: (id, m) =>
     req(`/api/medicines/${id}`, { method: 'PUT', body: JSON.stringify(m) }),

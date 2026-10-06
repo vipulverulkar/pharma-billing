@@ -125,6 +125,12 @@ export default function App() {
   const [tab, setTab] = useState('dashboard');
   const [medicines, setMedicines] = useState([]);
   const [search, setSearch] = useState('');
+  // medicines are server-paginated (catalog can be huge); medCache keeps every
+  // fetched row so cart lines resolve even when their medicine is off-page.
+  const [medsPage, setMedsPage] = useState(1);
+  const [medsTotal, setMedsTotal] = useState(0);
+  const [medsTotalPages, setMedsTotalPages] = useState(1);
+  const medCache = useRef({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -161,6 +167,7 @@ export default function App() {
   const [billsTotalPages, setBillsTotalPages] = useState(1);
   const [billsLoading, setBillsLoading] = useState(false);
   const BILLS_PER_PAGE = 10;
+  const MEDS_PER_PAGE = 20;
 
   // auth
   const [authed, setAuthed] = useState(!!getToken());
@@ -203,6 +210,8 @@ export default function App() {
   const [supForm, setSupForm] = useState({ name: '', phone: '', address: '', gstin: '' });
   const [editingSup, setEditingSup] = useState(null);
   const [purchase, setPurchase] = useState({ supplier: '', note: '', medicine_id: '', qty: '' });
+  const [purSearch, setPurSearch] = useState('');
+  const [purOptions, setPurOptions] = useState([]);
   const [movements, setMovements] = useState([]);
 
   useEffect(() => {
@@ -235,18 +244,47 @@ export default function App() {
     setUsers([]); setGstRates([]); setEditingRate(null); setUnitTypes([]); setEditingType(null);
     setPaymentModes([]); setEditingMode(null); setCart([]); setBillDetail(null);
     setDashboard(null); setCustomers([]); setSuppliers([]); setMovements([]);
+    setMedicines([]); setMedsPage(1); setMedsTotal(0); setMedsTotalPages(1);
+    medCache.current = {}; setPurSearch(''); setPurOptions([]);
   };
 
-  const loadMeds = async (q = '') => {
+  const medParams = (q, page, ov = {}) => {
+    // Billing tab filters by unit; inventory tab by stock/sort — never mix,
+    // so switching tabs can't silently narrow the other tab's list.
+    const billing = ov.billing ?? (tab === 'billing');
+    const p = { search: q, page, per_page: MEDS_PER_PAGE };
+    if (billing) p.unit = ov.unit ?? unitFilter;
+    else { p.stock = ov.stock ?? stockFilter; p.sort = ov.sort ?? sortBy; }
+    return p;
+  };
+  const loadMeds = async (q = search, page = medsPage, ov = {}) => {
     const reqId = ++medsReq.current;
     setLoading(true); setError('');
     try {
-      const data = await api.listMedicines(q);
+      const r = await api.listMedicines(medParams(q, page, ov));
       if (reqId !== medsReq.current) return;
-      setMedicines(data);
+      const list = r.medicines || [];
+      for (const m of list) medCache.current[m.id] = m;
+      setMedicines(list);
+      setMedsTotal(r.total || 0);
+      setMedsTotalPages(r.total_pages || 1);
+      setMedsPage(r.page || page);
     } catch (e) { if (authGuard(e)) return; setError(e.message); }
     finally { if (reqId === medsReq.current) setLoading(false); }
   };
+  const gotoMedsPage = (p) => {
+    const next = Math.min(Math.max(1, p), Math.max(1, medsTotalPages));
+    setMedsPage(next);
+    loadMeds(search, next);
+  };
+  // Compact page-number window (e.g. 1 … 4 5 6 … 12) for the medicine pagers.
+  const medsPageNums = (() => {
+    const total = Math.max(1, medsTotalPages);
+    const cur = Math.min(Math.max(1, medsPage), total);
+    if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+    const set = new Set([1, 2, cur - 1, cur, cur + 1, total - 1, total]);
+    return [...set].filter((n) => n >= 1 && n <= total).sort((a, b) => a - b);
+  })();
   const loadBills = async (page = billsPage, q = billSearch, st = billStatus, df = dateFrom, dt = dateTo) => {
     setBillsLoading(true);
     try {
@@ -338,15 +376,33 @@ export default function App() {
   // Note: date-range changes go through setBillsRange() (immediate load),
   // so dateFrom/dateTo stay out of the debounced search effect above.
   useEffect(() => {
-    const t = setTimeout(() => { if (authed) loadMeds(search); }, 300);
+    const t = setTimeout(() => { if (authed) { setMedsPage(1); loadMeds(search, 1); } }, 300);
     return () => clearTimeout(t);
   }, [search]);
+  useEffect(() => {
+    // Entering billing/inventory (re)loads page 1 with that tab's own filters.
+    if (!authed || (tab !== 'billing' && tab !== 'inventory')) return;
+    setMedsPage(1); loadMeds(search, 1);
+  }, [tab]);
+  useEffect(() => {
+    // Purchase-tab medicine picker: server search, top 10 matches.
+    if (!authed || !purSearch.trim() || purchase.medicine_id) { setPurOptions([]); return; }
+    const t = setTimeout(async () => {
+      try {
+        const r = await api.listMedicines({ search: purSearch.trim(), page: 1, per_page: 10 });
+        const list = r.medicines || [];
+        for (const m of list) medCache.current[m.id] = m;
+        setPurOptions(list);
+      } catch { /* picker is best-effort; main form error handling covers failures */ }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [purSearch, purchase.medicine_id, authed]);
   useEffect(() => {
     const t = setTimeout(() => { if (authed && tab === 'customers') loadCustomers(custSearch); }, 350);
     return () => clearTimeout(t);
   }, [custSearch]);
 
-  const medById = useMemo(() => Object.fromEntries(medicines.map((m) => [m.id, m])), [medicines]);
+  const medById = useMemo(() => ({ ...medCache.current }), [medicines]);
   const cartQty = useMemo(() => Object.fromEntries(cart.map((c) => [c.medicine_id, c.qty])), [cart]);
   const lowLimit = useMemo(() => {
     const v = Number(settings.low_stock_limit);
@@ -404,7 +460,6 @@ export default function App() {
   const tenderedNum = tendered === '' ? null : Number(tendered);
   const change = tenderedNum === null || isNaN(tenderedNum) ? null : Math.round((tenderedNum - grandTotal) * 100) / 100;
   const rxInCart = cartLines.filter((l) => l.med.rx_required);
-  const lowStockCount = medicines.filter((m) => m.quantity <= Math.max(lowLimit, m.min_stock || 0)).length;
 
   const openNew = () => { setEditing('new'); setForm({ ...EMPTY_MED, unit: unitTypes.find((t) => t.is_active)?.name || 'tablet', gst_percent: gstRates.find((s) => s.is_active)?.rate ?? 5 }); };
   const openEdit = (m) => { setEditing(m.id); setForm({ ...EMPTY_MED, ...m }); };
@@ -515,6 +570,7 @@ export default function App() {
       await api.createPurchase({ supplier: purchase.supplier, note: purchase.note, items: [{ medicine_id: Number(purchase.medicine_id), qty: Number(purchase.qty) }] });
       flash('Purchase recorded — stock increased.');
       setPurchase({ supplier: '', note: '', medicine_id: '', qty: '' });
+      setPurSearch(''); setPurOptions([]);
       loadMeds(search); loadMovements(); loadDashboard();
     } catch (err) { if (authGuard(err)) return; flash(err.message, true); }
   };
@@ -576,8 +632,8 @@ export default function App() {
           </div>
         </div>
         <div className="stats no-print">
-          <span className="chip">💊 {medicines.length}</span>
-          <span className={`chip ${lowStockCount ? 'warn' : 'good'}`}>⚠️ {lowStockCount} low</span>
+          <span className="chip">💊 {dashboard?.total_medicines ?? medsTotal}</span>
+          <span className={`chip ${(dashboard?.low_stock_count || 0) ? 'warn' : 'good'}`}>⚠️ {dashboard?.low_stock_count || 0} low</span>
           <span className="chip">📈 Today {inr(dashboard?.today_sales || 0)}</span>
           <span className="chip">👤 {username || '…'}{isAdmin ? ' · admin' : ''}</span>
           <div className="menu-wrap">
@@ -714,12 +770,12 @@ export default function App() {
                   <input className="search-big" autoFocus placeholder="🔍 Name, salt, use, batch, supplier or rack… (Enter = add first match)" value={search}
                     onChange={(e) => setSearch(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter') quickAddFirst(); }} style={{ flex: 1 }} />
-                  <button className="ghost" onClick={() => loadMeds(search)}>Refresh</button>
+                  <button className="ghost" onClick={() => loadMeds(search, medsPage)}>Refresh</button>
                 </div>
                 <div className="chip-row no-print">
-                  <button type="button" className={unitFilter === 'all' ? 'fchip on' : 'fchip'} onClick={() => setUnitFilter('all')}>All</button>
+                  <button type="button" className={unitFilter === 'all' ? 'fchip on' : 'fchip'} onClick={() => { setUnitFilter('all'); setMedsPage(1); loadMeds(search, 1, { billing: true, unit: 'all' }); }}>All</button>
                   {unitTypes.filter((t) => t.is_active).map((t) => (
-                    <button key={t.id} type="button" className={unitFilter === t.name ? 'fchip on' : 'fchip'} onClick={() => setUnitFilter(t.name)}>{t.name}</button>
+                    <button key={t.id} type="button" className={unitFilter === t.name ? 'fchip on' : 'fchip'} onClick={() => { setUnitFilter(t.name); setMedsPage(1); loadMeds(search, 1, { billing: true, unit: t.name }); }}>{t.name}</button>
                   ))}
                 </div>
                 {rxInCart.length > 0 && (
@@ -762,6 +818,23 @@ export default function App() {
                       })}
                     </tbody>
                   </table>
+                )}
+                {!loading && medsTotalPages > 1 && (
+                  <div className="row no-print" style={{ marginTop: 10, justifyContent: 'space-between' }}>
+                    <small className="muted">
+                      Showing {medsTotal === 0 ? 0 : (medsPage - 1) * MEDS_PER_PAGE + 1}–{Math.min(medsPage * MEDS_PER_PAGE, medsTotal)} of {medsTotal}
+                    </small>
+                    <div className="row">
+                      <button className="ghost" disabled={medsPage <= 1} onClick={() => gotoMedsPage(medsPage - 1)}>‹ Prev</button>
+                      {medsPageNums.map((n, i, arr) => (
+                        <span key={n} className="row" style={{ gap: 4 }}>
+                          {i > 0 && n - arr[i - 1] > 1 && <small className="muted">…</small>}
+                          <button className={n === medsPage ? 'preset on' : 'preset'} onClick={() => gotoMedsPage(n)}>{n}</button>
+                        </span>
+                      ))}
+                      <button className="ghost" disabled={medsPage >= medsTotalPages} onClick={() => gotoMedsPage(medsPage + 1)}>Next ›</button>
+                    </div>
+                  </div>
                 )}
               </div>
               <div className={cartLines.length > 0 ? 'cart has-items' : 'cart'} id="bill-cart">
@@ -848,15 +921,15 @@ export default function App() {
           <div>
             <div className="toolbar no-print">
               <input placeholder="🔍 Search name, salt, batch, supplier, rack…" value={search} onChange={(e) => setSearch(e.target.value)} style={{ flex: 2, minWidth: 180 }} />
-              <select value={stockFilter} onChange={(e) => setStockFilter(e.target.value)}>
+              <select value={stockFilter} onChange={(e) => { const v = e.target.value; setStockFilter(v); setMedsPage(1); loadMeds(search, 1, { billing: false, stock: v }); }}>
                 <option value="all">All stock</option>
-                <option value="low">⚠️ Low stock ({medicines.filter((m) => m.quantity <= Math.max(lowLimit, m.min_stock || 0) && m.quantity > 0).length})</option>
+                <option value="low">⚠️ Low stock ({dashboard?.low_stock_count || 0})</option>
                 <option value="out">⛔ Out of stock</option>
                 <option value="expiring">⏰ Expiring ≤ 90 days</option>
                 <option value="expired">☠️ Expired</option>
                 <option value="rx">℞ Prescription drugs</option>
               </select>
-              <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
+              <select value={sortBy} onChange={(e) => { const v = e.target.value; setSortBy(v); setMedsPage(1); loadMeds(search, 1, { billing: false, sort: v }); }}>
                 <option value="name">Sort: Name</option>
                 <option value="stock">Sort: Lowest stock</option>
                 <option value="expiry">Sort: Expiry</option>
@@ -896,6 +969,23 @@ export default function App() {
               </tbody>
             </table>
             {inventoryList.length === 0 && <div className="empty"><span className="big">📦</span>Nothing matches this filter.</div>}
+            {!loading && medsTotalPages > 1 && (
+              <div className="row no-print" style={{ marginTop: 10, justifyContent: 'space-between' }}>
+                <small className="muted">
+                  Showing {medsTotal === 0 ? 0 : (medsPage - 1) * MEDS_PER_PAGE + 1}–{Math.min(medsPage * MEDS_PER_PAGE, medsTotal)} of {medsTotal}
+                </small>
+                <div className="row">
+                  <button className="ghost" disabled={medsPage <= 1} onClick={() => gotoMedsPage(medsPage - 1)}>‹ Prev</button>
+                  {medsPageNums.map((n, i, arr) => (
+                    <span key={n} className="row" style={{ gap: 4 }}>
+                      {i > 0 && n - arr[i - 1] > 1 && <small className="muted">…</small>}
+                      <button className={n === medsPage ? 'preset on' : 'preset'} onClick={() => gotoMedsPage(n)}>{n}</button>
+                    </span>
+                  ))}
+                  <button className="ghost" disabled={medsPage >= medsTotalPages} onClick={() => gotoMedsPage(medsPage + 1)}>Next ›</button>
+                </div>
+              </div>
+            )}
             {editing && isAdmin && (
               <div className="modal"><div>
                 <h3>{editing === 'new' ? '➕ Add Medicine' : `✏️ Edit #${editing}`}</h3>
@@ -1066,10 +1156,18 @@ export default function App() {
               <div className="panel">
                 <h3>🚚 Record purchase / stock-in</h3>
                 <form onSubmit={submitPurchase}>
-                  <select value={purchase.medicine_id} onChange={(e) => setPurchase({ ...purchase, medicine_id: e.target.value })} style={{ width: '100%', marginBottom: 8 }} required>
-                    <option value="">Select medicine…</option>
-                    {medicines.map((m) => <option key={m.id} value={m.id}>{m.name} (stock {m.quantity})</option>)}
-                  </select>
+                  <input placeholder="🔍 Type to search medicine…" value={purSearch} onChange={(e) => { setPurSearch(e.target.value); if (purchase.medicine_id) setPurchase({ ...purchase, medicine_id: '' }); }} style={{ width: '100%', marginBottom: 8 }} required={!purchase.medicine_id} />
+                  {purOptions.length > 0 && !purchase.medicine_id && (
+                    <div className="mini-list" style={{ marginBottom: 8 }}>
+                      {purOptions.map((m) => (
+                        <div key={m.id} className="mini-item">
+                          <span><b>{m.name}</b><br /><small>stock {m.quantity} · {inr(m.price)}{m.supplier ? ` · ${m.supplier}` : ''}</small></span>
+                          <button type="button" className="ghost" onClick={() => { setPurchase({ ...purchase, medicine_id: m.id }); setPurSearch(m.name); setPurOptions([]); }}>Select</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {purchase.medicine_id ? <p><small>Selected: <b>{purSearch}</b> <button type="button" className="ghost" onClick={() => { setPurchase({ ...purchase, medicine_id: '' }); setPurSearch(''); }}>✕</button></small></p> : null}
                   <div className="row">
                     <input type="number" min="1" placeholder="Qty received" value={purchase.qty} onChange={(e) => setPurchase({ ...purchase, qty: e.target.value })} style={{ flex: 1, minWidth: 120 }} required />
                     <input placeholder="Supplier" value={purchase.supplier} onChange={(e) => setPurchase({ ...purchase, supplier: e.target.value })} style={{ flex: 2, minWidth: 140 }} list="sup-list2" />

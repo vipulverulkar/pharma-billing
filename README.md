@@ -1,153 +1,118 @@
-# Pharmacy Billing App (₹ INR) — React + Python Flask + SQLite
+# Pharmacy Billing App (₹ INR)
 
-## Database: SQLAlchemy ORM + versioned migrations
-- `backend/models.py` — ORM models (medicines, bills, bill items, users, GST slabs, medicine types)
-- `backend/migrations.py` — ordered, idempotent migrations tracked in a
-  `schema_migrations` table. New change? Append a version — fresh installs and
-  every old `pharmacy.db` upgrade automatically on startup.
-- Default DB is the SQLite file `backend/pharmacy.db`. Override with:
-  ```bash
-  DATABASE_URL=postgresql+psycopg2://user:pass@localhost/pharmacy python app.py
-  ```
-  (install a matching driver, e.g. `psycopg2-binary`, first)
+Counter-friendly pharmacy billing + inventory app. **React + Vite** frontend, **Python Flask + SQLAlchemy** backend, **SQLite** database (auto-created with sample stock).
 
-## Structure
-- `backend/app.py` — Flask REST API + SQLite (`pharmacy.db` auto-created with sample stock)
-- `frontend/` — React + Vite UI (billing in Indian Rupees, inventory add/edit/remove, bills history)
+![Login](docs/screenshots/login.png)
 
-## Run on Windows (no Docker)
+## Screens
 
-1. Install **Python 3.10+** from https://www.python.org/downloads/
-   (tick **"Add python.exe to PATH"** during install).
-2. Install **Node.js LTS** from https://nodejs.org/ (needed once, to build the page).
-3. Download this folder (Code → Download ZIP, or `git clone`), unzip it.
-4. Double-click **`start.bat`** — it installs everything, builds the page on
-   first run, opens http://127.0.0.1:5000/ in your browser (login: `admin` / `admin`).
-   - If port 5000 is busy: run `start.bat 5001` from a terminal instead.
-   - To stop: close the black **"Pharmacy Server"** window.
-   - Your data lives in `backend\pharmacy.db` — copy that file to back it up.
-   - To change the admin password, log in and use the Users/Account tab
-     (Change password) — do this right after first login.
+| Billing | Inventory |
+|---|---|
+| ![Billing](docs/screenshots/billing.png) | ![Inventory](docs/screenshots/inventory.png) |
 
-## Run backend
+## Features
+
+- **Billing** — name/salt/batch search (Enter adds first match), quantity steppers capped at stock, per-line rates, bill-level discount %, payment modes (Cash/UPI/Card/Credit/Other), cash-tendered → change calculator, printable GST TAX INVOICE with amount-in-words.
+- **Inventory** — add/edit/remove medicines, stock adjustments with audit ledger, low/out-of-stock, expiring/expired and prescription-drug filters, sorting, suppliers + purchase/stock-in entries.
+- **Server-side pagination** — `GET /api/medicines` and `GET /api/bills` are paged (`?page=&per_page=&search=`), so catalogs with 100k+ rows stay fast.
+- **Masters (admin)** — GST slabs, medicine types, payment modes, store profile (name, address, GSTIN, logo, low-stock threshold).
+- **Users & roles** — admin (everything) vs staff (billing + view-only inventory). Token sessions (12 h), hashed passwords.
+- **Dashboard & reports** — today's sales, stock value, low/expired alerts, top sellers, sales reports.
+
+## Installation
+
+Requirements: **Python 3.10+**. Node.js 18+ only if you want the Vite dev server (the prebuilt UI in `frontend/dist` is served by Flask, so Node is optional for just running the app).
+
+### Option A — Windows (easiest)
+
+1. Install Python 3.10+ (tick **"Add python.exe to PATH"**) and Node.js LTS (only needed once, to rebuild the UI).
+2. Download/clone this folder.
+3. Double-click **`start.bat`** — installs deps, builds the page on first run, opens the app in your browser.
+4. Log in with `admin` / `admin`.
+
+If port 5000 is busy: run `start.bat 5001` from a terminal instead.
+
+### Option B — Linux / macOS
+
 ```bash
+# 1. Backend (serves API + prebuilt UI)
 cd backend
 pip install -r requirements.txt
 python app.py
-# API → http://127.0.0.1:5000/api/health
+# App → http://127.0.0.1:5000/   API → http://127.0.0.1:5000/api/health
 ```
 
-## Run frontend (needs Node 18+)
+If port 5000 is busy: `PORT=5001 python app.py`.
+
 ```bash
-export PATH="$HOME/.local/node/bin:$PATH"  # Node 22 is already installed here
+# 2. Frontend dev server (optional — hot reload while developing UI)
 cd frontend
 npm install
 npm run dev
 # UI → http://127.0.0.1:5173 (proxies /api to Flask)
 ```
 
-Production: `npm run build` creates `frontend/dist`, which Flask serves at `http://127.0.0.1:5000/`.
-If port 5000 is busy, run `PORT=5001 python app.py` instead.
+Production UI rebuild after frontend changes:
 
-## Login
-The app opens with a login screen. Default credentials:
-- username: `admin`
-- password: `admin`
-
-Change them with environment variables when starting the backend:
 ```bash
-ADMIN_USER=owner ADMIN_PASS='s3cret!' python app.py
+cd frontend && npm run build   # Flask serves frontend/dist automatically
 ```
-Sessions are token-based (12 h, configurable via `SESSION_HOURS`) and all
-`/api/medicines` + `/api/bills` endpoints require login.
 
-## Billing (counter-friendly)
-- Quantity **steppers** (−/+) capped at stock, per-line rates, live totals
-- Search by name, **salt/composition** or batch; Enter adds first match
-- Bill-level **discount %** with 0/5/10 quick presets
-- **Payment mode**: Cash, UPI, Card, Credit, Other (stored per bill)
-- **Cash tendered → change/short** calculator for counter sales
-- Printable **TAX INVOICE**: bill no, date, GST breakup, discount, amount in
-  words (Indian lakh/crore format), payment mode
+### Configuration (environment variables)
 
-## GST rates as master data (admin)
-- Standard Indian slabs seeded: 0%, 5%, 12%, 18%, 28%
-- Separate **🏷️ Masters ▾ menu** (top-right, admin only) → **GST Rates**:
-  add slabs, rename (cascades to all medicines on that slab),
-  activate/deactivate, delete (blocked while in use)
-- Medicines must use an active slab — enforced by the API and offered as a
-  dropdown in the medicine form
-- GST API: `GET /api/gst-rates`, `POST /api/gst-rates`,
-  `PUT /api/gst-rates/:id`, `DELETE /api/gst-rates/:id`
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORT` | `5000` | Backend port |
+| `ADMIN_USER` / `ADMIN_PASS` | `admin` / `admin` | Seeded admin login (first run) |
+| `SESSION_HOURS` | `12` | Login token lifetime |
+| `DATABASE_URL` | `backend/pharmacy.db` | SQLite file, or e.g. `postgresql+psycopg2://user:pass@localhost/pharmacy` |
 
-## Medicine types as master data (admin)- Seeded types: tablet, capsule, sachet, strip, bottle, syrup, injection, tube
-- Same **🏷️ Masters ▾ menu** → **Medicine Types**: add types (e.g. `drops`), rename (cascades to all
-  medicines of that type), activate/deactivate, delete (blocked while in use)
-- Medicines must use an active type — enforced by the API and offered as a
-  dropdown in the medicine form
-- Types API: `GET /api/unit-types`, `POST /api/unit-types`,
-  `PUT /api/unit-types/:id`, `DELETE /api/unit-types/:id`
+Change the admin password after first login via the **Users/Account** tab.
 
-## Payment modes as master data (admin)
-- Seeded modes: Cash, UPI, Card, Credit, Other
-- Same **🏷️ Masters ▾ menu** → **Payment Modes**: add, rename (cascades to
-  bills), activate/deactivate, delete (blocked while in use)
-- Billing offers only active modes; the API rejects anything off-list
-- Modes API: `GET /api/payment-modes`, `POST /api/payment-modes`,
-  `PUT /api/payment-modes/:id`, `DELETE /api/payment-modes/:id`
+## Data & backups
 
-## Store profile (admin, under Masters ▾ → Store Profile)
-- Editable pharmacy **name, tagline, address, phone, GSTIN** (format-validated)
-  plus **logo upload** (png/jpg/gif/webp/svg ≤ 2 MB)
-- Also holds the **low-stock alert threshold** (tablets) — no longer hardcoded;
-  badges and the header counter follow it
-- Branding flows into the header, login screen and printed TAX INVOICEs
-- `GET /api/settings` is public; writes are admin-only
-- Settings API: `PUT /api/settings`, `POST /api/settings/logo`,
-  `DELETE /api/settings/logo`
-
-## Medicine composition (salt)
-- Each medicine stores its **composition** (e.g. `Ibuprofen + Paracetamol`),
-  editable in the medicine form and shown in inventory, billing and cart
-- Search covers composition — typing a salt finds all its brands
-- Migration v7 backfills compositions for the sample stock
-
-## Medicine description and usage
-- Every medicine now has a **description** and **usage/how to take** field
-- Shown in the medicine form (admin), inventory list, billing cart, and printed invoice
-- All 106 medicines have descriptions/usage (catalog + legacy backfilled) pain/fever,
-  antacids, allergy/cold, chronic care (diabetes/BP/thyroid), vitamins,
-  first-aid and topicals — with per-tablet prices, compositions and GST slabs
-- Wave two adds cardiac, neuro/psych, skin, eye/ear, pediatric syrups,
-  injections, steroids, gout and malaria drugs (106 total)
-- Backfills **only missing names**: your stock levels are never overwritten
-
-## Roles: admin vs staff
-- **Admin**: everything — inventory add/edit/remove, user management, billing.
-- **Staff**: billing, inventory viewing, bills history, own password change.
-  Inventory write endpoints (`POST/PUT/DELETE /api/medicines`) return 403 for
-  staff, and the UI hides Add/Edit/Remove buttons from them.
-
-## Users (admin manages logins)
-- The **👥 Users** tab (visible as admin) lists all logins, lets admin **add new
-  users** (staff or admin) and remove them (not self, not the last admin).
-- The **👤 Account** tab lets every user change their own password.
-- Passwords are stored hashed (Werkzeug PBKDF2); admin endpoints return 403 for staff.
-- User API: `GET /api/users`, `POST /api/users`, `DELETE /api/users/:id`,
-  `POST /api/change-password`.
+- All data lives in **`backend/pharmacy.db`** — copy that file to back up. Versioned migrations in `backend/migrations.py` upgrade old DB files automatically on startup.
+- Bulk catalogue import: place a CSV at `backend/uploads/medicine_data.csv` (`product_name, salt_composition, product_price, product_manufactured, medicine_desc, side_effects, …`) and import it into `medicines` with sensible defaults (quantity, GST slab, unit inference).
+- Uploaded store logos live in `backend/uploads/`.
 
 ## API
-- `GET /api/medicines?search=` — list
-- `POST /api/medicines` — add `{name, unit, batch_no, expiry_date, quantity, price, gst_percent}`
-- `PUT /api/medicines/:id` — edit
-- `DELETE /api/medicines/:id` — remove
-- `POST /api/bills` — create bill `{customer_name, customer_phone, items:[{medicine_id, qty}]}` (stock decremented, GST applied, totals in ₹)
-- `GET /api/bills`, `GET /api/bills/:id` — history (latest 200 by default;
-- paged full history with `?page=1&per_page=10&search=&status=&from=&to=` → `{bills, total, page, per_page, total_pages}`)
 
-## Billing model: number of tablets
-- `quantity` = number of tablets (or units, e.g. sachets) in stock
-- `price` = price **per tablet** in ₹ (e.g. 10 Paracetamol tablets × ₹2.33 + 5% GST = ₹24.47)
-- `unit` = billing unit: `tablet` (default), `capsule`, `sachet`, `strip`, `bottle`, `syrup`, `injection`, `tube`
+All `/api/medicines` and `/api/bills` endpoints require login (`Authorization: Bearer <token>`); writes require admin unless noted.
 
-All money is formatted with `Intl.NumberFormat('en-IN', {currency:'INR'})` → ₹.
+**Medicines**
+
+- `GET /api/medicines?search=&unit=&stock=&sort=&page=1&per_page=20` → `{medicines, total, page, per_page, total_pages}` (omit `page` for legacy plain array). `stock`: `all|low|out|expiring|expired|rx`. `sort`: `name|stock|expiry|value`.
+- `POST /api/medicines` — `{name, composition, unit, batch_no, expiry_date, quantity, price, gst_percent, description, usage, mrp, supplier, rack, schedule, rx_required, min_stock}` (admin)
+- `PUT /api/medicines/:id`, `DELETE /api/medicines/:id` (admin)
+- `POST /api/medicines/:id/adjust` — `{delta, reason}` stock correction (admin)
+
+**Billing**
+
+- `POST /api/bills` — `{customer_name, customer_phone, doctor_name, prescription_no, discount_percent, payment_mode, items:[{medicine_id, qty}]}` (stock decremented, GST applied)
+- `GET /api/bills?page=1&per_page=10&search=&status=&from=&to=` → `{bills, total, page, per_page, total_pages}`
+- `GET /api/bills/:id`, `POST /api/bills/:id/return`
+
+**Masters, users, misc**
+
+- `GET/POST/PUT/DELETE /api/gst-rates`, `/api/unit-types`, `/api/payment-modes` (admin writes)
+- `GET /api/settings` (public), `PUT /api/settings`, `POST/DELETE /api/settings/logo` (admin)
+- `GET/POST/DELETE /api/users` (admin), `POST /api/change-password`
+- `GET /api/dashboard`, `GET /api/reports/sales?days=14`, `GET /api/suppliers`, `POST /api/purchases`, `GET /api/stock-movements`, `GET /api/customers`
+
+Billing model: `quantity` = tablets/units in stock, `price` = per-tablet price in ₹, `unit` = tablet/capsule/sachet/strip/bottle/syrup/injection/tube.
+
+## Project structure
+
+```
+backend/
+  app.py            # Flask REST API + serves frontend/dist
+  models.py         # SQLAlchemy models (medicines, bills, users, masters…)
+  migrations.py     # versioned, idempotent schema migrations
+  requirements.txt
+  pharmacy.db       # SQLite data (auto-created)
+  uploads/          # logos + import CSVs
+frontend/
+  src/              # React UI (App.jsx, api.js)
+  dist/             # production build served by Flask
+start.bat           # Windows launcher
+```
